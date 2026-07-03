@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+	<defs>
+		<linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
+			<stop offset="0" stop-color="#34d399" />
+			<stop offset="1" stop-color="#059669" />
+		</linearGradient>
+	</defs>
+	<!-- magnifying glass handle -->
+	<rect x="84" y="84" width="36" height="16" rx="8"
+		transform="rotate(45 84 84)" fill="#065f46" />
+	<!-- lens ring -->
+	<circle cx="52" cy="52" r="44" fill="none" stroke="url(#lens)" stroke-width="16" />
+	<!-- lens glass -->
+	<circle cx="52" cy="52" r="34" fill="#022c22" />
+	<!-- bold angle-bracket accent, drawn as paths (not text) so it survives
+	     rasterization at 16px, unlike thin monospace glyphs -->
+	<path d="M 40 34 L 24 52 L 40 70" fill="none" stroke="#6ee7b7"
+		stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+	<path d="M 64 34 L 80 52 L 64 70" fill="none" stroke="#6ee7b7"
+		stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
