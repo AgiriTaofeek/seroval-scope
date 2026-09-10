@@ -1,4 +1,4 @@
-import { entrySearchText } from "./deserialize.ts";
+import { compileSearch, type SearchMode } from "./search.ts";
 import type { CapturedEntry } from "./types.ts";
 
 export const ALL_METHODS = "All";
@@ -7,6 +7,7 @@ export const STATUS_BUCKETS = ["2xx", "3xx", "4xx", "5xx"] as const;
 
 export interface EntryFilters {
 	search: string;
+	searchMode: SearchMode;
 	method: string;
 	status: string;
 }
@@ -16,12 +17,18 @@ function matchesStatusBucket(status: number, bucket: string): boolean {
 	return Math.floor(status / 100) === Number(bucket[0]);
 }
 
+export interface FilterResult {
+	entries: CapturedEntry[];
+	/** Non-null when the search query itself is malformed (bad regex, etc.). */
+	searchError: string | null;
+}
+
 export function filterEntries(
 	entries: CapturedEntry[],
 	filters: EntryFilters,
-): CapturedEntry[] {
-	const needle = filters.search.trim().toLowerCase();
-	return entries.filter((entry) => {
+): FilterResult {
+	const search = compileSearch(filters.search, filters.searchMode);
+	const result = entries.filter((entry) => {
 		if (filters.method !== ALL_METHODS && entry.method !== filters.method) {
 			return false;
 		}
@@ -31,11 +38,9 @@ export function filterEntries(
 		) {
 			return false;
 		}
-		if (needle && !entrySearchText(entry).toLowerCase().includes(needle)) {
-			return false;
-		}
-		return true;
+		return search.test(entry);
 	});
+	return { entries: result, searchError: search.error ?? null };
 }
 
 // Populates the Method filter dropdown with only the methods actually seen

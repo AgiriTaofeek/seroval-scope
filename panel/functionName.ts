@@ -1,7 +1,21 @@
 export interface DecodedFunctionId {
 	file: string;
 	exportName: string;
+	/** How the id was resolved — dev ids are self-describing, prod ids need a manifest. */
+	source?: "dev" | "manifest";
 }
+
+/**
+ * A user-supplied map from a production function id (the sha256 hex in the URL)
+ * to its source location. TanStack Start's production compiler uses
+ * `sha256(filename + "--" + functionName)` for this slot, which is one-way — so
+ * the only way to name a prod call is to feed the panel a lookup table built at
+ * build time. Keys may be the full 64-char hash or any unique prefix.
+ */
+export type FunctionIdManifest = Record<
+	string,
+	{ file: string; exportName: string }
+>;
 
 // The compiled handler variable is always named `${exportName}_createServerFn_handler`,
 // with a `_N` suffix appended if TanStack Start had to deduplicate multiple
@@ -52,15 +66,62 @@ export function decodeDevFunctionId(idSegment: string): DecodedFunctionId | null
 	}
 }
 
+// A production RPC id is 64 lowercase hex chars: sha256(file--exportName).
+const PROD_ID = /^[0-9a-f]{64}$/;
+
+/** Looks a raw id segment up in a user-supplied manifest (exact key or unique prefix). */
+export function resolveFromManifest(
+	idSegment: string,
+	manifest: FunctionIdManifest | null,
+): DecodedFunctionId | null {
+	if (!manifest) return null;
+	const exact = manifest[idSegment];
+	if (exact) return { ...exact, source: "manifest" };
+	const matches = Object.keys(manifest).filter(
+		(key) => idSegment.startsWith(key) || key.startsWith(idSegment),
+	);
+	if (matches.length === 1) {
+		return { ...manifest[matches[0]], source: "manifest" };
+	}
+	return null;
+}
+
+/**
+ * Resolves an RPC id segment to its source location: dev ids decode directly,
+ * production sha256 ids fall back to the manifest. Returns null when neither
+ * works (an unmapped prod build).
+ */
+export function resolveFunctionId(
+	idSegment: string,
+	manifest: FunctionIdManifest | null = null,
+): DecodedFunctionId | null {
+	const dev = decodeDevFunctionId(idSegment);
+	if (dev) return { ...dev, source: "dev" };
+	if (PROD_ID.test(idSegment)) return resolveFromManifest(idSegment, manifest);
+	return resolveFromManifest(idSegment, manifest);
+}
+
 // The RPC id is always the last path segment, regardless of the configured
 // base path (default "/_serverFn/", but user-customizable) — so this doesn't
 // need to know what pattern the panel is filtering on.
-export function decodeServerFnUrl(url: string): DecodedFunctionId | null {
+export function decodeServerFnUrl(
+	url: string,
+	manifest: FunctionIdManifest | null = null,
+): DecodedFunctionId | null {
 	try {
 		const { pathname } = new URL(url);
 		const idSegment = pathname.split("/").filter(Boolean).pop();
 		if (!idSegment) return null;
-		return decodeDevFunctionId(idSegment);
+		return resolveFunctionId(idSegment, manifest);
+	} catch {
+		return null;
+	}
+}
+
+/** The raw last-path-segment id, for manifest editing / display. */
+export function serverFnIdSegment(url: string): string | null {
+	try {
+		return new URL(url).pathname.split("/").filter(Boolean).pop() ?? null;
 	} catch {
 		return null;
 	}

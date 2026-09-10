@@ -17,22 +17,31 @@ function entry(overrides: Partial<CapturedEntry>): CapturedEntry {
 		time: 0,
 		requestRaw: null,
 		responseRaw: "",
+		responseBase64: false,
 		isSerialized: false,
+		responseContentType: "application/json",
 		isFormData: false,
+		requestContentType: null,
+		isRawPassthrough: false,
+		location: null,
+		timings: null,
+		serverTiming: null,
+		upstreamHeader: null,
 		...overrides,
 	};
 }
 
+const baseFilters = {
+	search: "",
+	searchMode: "text" as const,
+	method: ALL_METHODS,
+	status: ALL_STATUSES,
+};
+
 describe("filterEntries", () => {
 	test("with all filters at their 'no filter' value, returns every entry", () => {
 		const entries = [entry({ id: "a" }), entry({ id: "b", method: "GET" })];
-		expect(
-			filterEntries(entries, {
-				search: "",
-				method: ALL_METHODS,
-				status: ALL_STATUSES,
-			}),
-		).toHaveLength(2);
+		expect(filterEntries(entries, baseFilters).entries).toHaveLength(2);
 	});
 
 	test("filters by exact method", () => {
@@ -40,12 +49,11 @@ describe("filterEntries", () => {
 			entry({ id: "a", method: "GET" }),
 			entry({ id: "b", method: "POST" }),
 		];
-		const result = filterEntries(entries, {
-			search: "",
-			method: "GET",
-			status: ALL_STATUSES,
-		});
-		expect(result.map((e) => e.id)).toEqual(["a"]);
+		expect(
+			filterEntries(entries, { ...baseFilters, method: "GET" }).entries.map(
+				(e) => e.id,
+			),
+		).toEqual(["a"]);
 	});
 
 	test("filters by status bucket", () => {
@@ -56,8 +64,9 @@ describe("filterEntries", () => {
 			entry({ id: "servererror", status: 500 }),
 		];
 		expect(
-			filterEntries(entries, { search: "", method: ALL_METHODS, status: "4xx" })
-				.map((e) => e.id),
+			filterEntries(entries, { ...baseFilters, status: "4xx" }).entries.map(
+				(e) => e.id,
+			),
 		).toEqual(["notfound"]);
 	});
 
@@ -69,21 +78,22 @@ describe("filterEntries", () => {
 			entry({ id: "wrong-search", method: "GET", status: 200, responseRaw: '{"x":"other"}' }),
 		];
 		const result = filterEntries(entries, {
+			...baseFilters,
 			search: "needle",
 			method: "GET",
 			status: "2xx",
 		});
-		expect(result.map((e) => e.id)).toEqual(["match"]);
+		expect(result.entries.map((e) => e.id)).toEqual(["match"]);
 	});
 
-	test("search matches decoded content, case-insensitively", () => {
-		const entries = [entry({ id: "a", responseRaw: '{"hello":"World"}' })];
-		const result = filterEntries(entries, {
-			search: "world",
-			method: ALL_METHODS,
-			status: ALL_STATUSES,
+	test("surfaces a search-syntax error and matches nothing", () => {
+		const result = filterEntries([entry({})], {
+			...baseFilters,
+			search: "(bad",
+			searchMode: "regex",
 		});
-		expect(result.map((e) => e.id)).toEqual(["a"]);
+		expect(result.searchError).toBeTruthy();
+		expect(result.entries).toEqual([]);
 	});
 });
 

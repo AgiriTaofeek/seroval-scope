@@ -1,8 +1,16 @@
+import { normalizeTimings } from "./timing.ts";
 import type { CapturedEntry } from "./types.ts";
 
 // Confirmed via @types/chrome + the underlying har-format spec: response
 // headers are an array of { name, value } pairs, not a plain object/map.
 const SEROVAL_HEADER = "x-tss-serialized";
+// X_TSS_RAW_RESPONSE in @tanstack/start-client-core's constants.ts — set on a
+// server function that returned a bare `Response` for the framework to pass
+// through untouched. Its body is whatever the function sent, not seroval.
+const RAW_RESPONSE_HEADER = "x-tss-raw";
+// Opt-in header a project's own server middleware can set to report the
+// backend/API calls a server function made — see examples/serovalscope-middleware.ts.
+const UPSTREAM_HEADER = "x-serovalscope-upstream";
 const FORM_MIME_TYPES = new Set([
 	"multipart/form-data",
 	"application/x-www-form-urlencoded",
@@ -10,20 +18,27 @@ const FORM_MIME_TYPES = new Set([
 
 let nextId = 0;
 
-function headerValue(
-	headers: chrome.devtools.network.Request["response"]["headers"],
-	name: string,
-): string | undefined {
-	return headers.find((h) => h.name.toLowerCase() === name.toLowerCase())
-		?.value;
+type HarHeaders = { name: string; value: string }[];
+
+function headerValue(headers: HarHeaders, name: string): string | undefined {
+	return headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+}
+
+function firstFormMime(contentType: string | undefined): boolean {
+	if (!contentType) return false;
+	// A multipart Content-Type carries a `; boundary=...` parameter, so match
+	// on prefix rather than exact equality.
+	const base = contentType.split(";", 1)[0].trim().toLowerCase();
+	return FORM_MIME_TYPES.has(base);
 }
 
 /**
  * Wires chrome.devtools.network.onRequestFinished, filters to requests whose
  * URL contains `pattern`, and calls `onEntry` once per matching request with
- * its raw (not yet decoded) request/response text. Never throws out of the
- * listener — a single malformed request must not stop subsequent ones from
- * being captured. Returns an unsubscribe function.
+ * its raw (not yet decoded) request/response text plus the metadata the panel
+ * needs (timings, content types, TanStack Start marker headers). Never throws
+ * out of the listener — a single malformed request must not stop subsequent
+ * ones from being captured. Returns an unsubscribe function.
  */
 export function startCapture(
 	pattern: string,
@@ -33,9 +48,11 @@ export function startCapture(
 		try {
 			if (!pattern || !request.request.url.includes(pattern)) return;
 
-			const isFormData = FORM_MIME_TYPES.has(
-				request.request.postData?.mimeType ?? "",
-			);
+			const requestContentType =
+				headerValue(request.request.headers ?? [], "content-type") ?? null;
+			const reqMime =
+				request.request.postData?.mimeType ?? requestContentType ?? undefined;
+			const isFormData = firstFormMime(reqMime);
 
 			let requestRaw: string | null = null;
 			if (!isFormData) {
@@ -52,9 +69,15 @@ export function startCapture(
 				}
 			}
 
-			request.getContent((body) => {
-				const isSerialized =
-					headerValue(request.response.headers, SEROVAL_HEADER) === "true";
+			// getContent's second arg is "" for text and "base64" for anything
+			// Chrome treats as binary — the framed/multiplexed response protocol
+			// lands here as base64, and decoding it as text would corrupt it.
+			request.getContent((body, encoding) => {
+				const headers = request.response.headers ?? [];
+				const rawContentType =
+					request.response.content?.mimeType ??
+					headerValue(headers, "content-type") ??
+					null;
 				onEntry({
 					id: String(nextId++),
 					url: request.request.url,
@@ -63,8 +86,18 @@ export function startCapture(
 					time: Date.parse(request.startedDateTime),
 					requestRaw,
 					responseRaw: body ?? "",
-					isSerialized,
+					responseBase64: encoding === "base64",
+					isSerialized: headerValue(headers, SEROVAL_HEADER) === "true",
+					responseContentType: rawContentType
+						? rawContentType.split(";", 1)[0].trim().toLowerCase()
+						: null,
 					isFormData,
+					requestContentType,
+					isRawPassthrough: headerValue(headers, RAW_RESPONSE_HEADER) === "true",
+					location: headerValue(headers, "location") ?? null,
+					timings: normalizeTimings(request.time, request.timings),
+					serverTiming: headerValue(headers, "server-timing") ?? null,
+					upstreamHeader: headerValue(headers, UPSTREAM_HEADER) ?? null,
 				});
 			});
 		} catch {
@@ -74,5 +107,6 @@ export function startCapture(
 	};
 
 	chrome.devtools.network.onRequestFinished.addListener(listener);
-	return () => chrome.devtools.network.onRequestFinished.removeListener(listener);
+	return () =>
+		chrome.devtools.network.onRequestFinished.removeListener(listener);
 }

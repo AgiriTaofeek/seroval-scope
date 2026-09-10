@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 .output
+chrome-mv3
 stats.html
 stats-*.json
 .wxt
