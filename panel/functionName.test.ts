@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 
-import { decodeDevFunctionId, decodeServerFnUrl } from "./functionName.ts";
+import {
+	decodeDevFunctionId,
+	decodeServerFnUrl,
+	resolveFromManifest,
+	resolveFunctionId,
+	serverFnIdSegment,
+} from "./functionName.ts";
 
 describe("decodeDevFunctionId", () => {
 	// Real id captured from subpilot-web's dev server: `curl
@@ -57,9 +63,10 @@ describe("decodeServerFnUrl", () => {
 		const result = decodeServerFnUrl(
 			`http://localhost:3000/_serverFn/${realDevId}`,
 		);
-		expect(result).toEqual({
+		expect(result).toMatchObject({
 			file: "/src/lib/api/invoices.ts",
 			exportName: "voidInvoice",
+			source: "dev",
 		});
 	});
 
@@ -76,5 +83,54 @@ describe("decodeServerFnUrl", () => {
 
 	test("returns null for a non-server-fn URL whose last segment isn't a valid id", () => {
 		expect(decodeServerFnUrl("http://localhost:3000/api/health")).toBeNull();
+	});
+});
+
+describe("serverFnIdSegment", () => {
+	test("returns the last path segment", () => {
+		expect(
+			serverFnIdSegment("http://localhost:3000/_serverFn/abc123?payload=x"),
+		).toBe("abc123");
+	});
+
+	test("returns null for an unparseable URL", () => {
+		expect(serverFnIdSegment("nope")).toBeNull();
+	});
+});
+
+describe("production id resolution via manifest", () => {
+	const prodHash = "a".repeat(64);
+	const manifest = {
+		[prodHash]: { file: "/src/api/billing.ts", exportName: "charge" },
+	};
+
+	test("resolveFunctionId falls back to the manifest for a sha256 id", () => {
+		expect(resolveFunctionId(prodHash, manifest)).toEqual({
+			file: "/src/api/billing.ts",
+			exportName: "charge",
+			source: "manifest",
+		});
+	});
+
+	test("resolveFunctionId returns null for an unmapped prod id", () => {
+		expect(resolveFunctionId("b".repeat(64), manifest)).toBeNull();
+	});
+
+	test("dev ids still resolve without a manifest and are marked source 'dev'", () => {
+		const id =
+			"eyJmaWxlIjoiL3NyYy9saWIvYXBpL2ludm9pY2VzLnRzP3Rzcy1zZXJ2ZXJmbi1zcGxpdCIsImV4cG9ydCI6InZvaWRJbnZvaWNlX2NyZWF0ZVNlcnZlckZuX2hhbmRsZXIifQ";
+		expect(resolveFunctionId(id)?.source).toBe("dev");
+	});
+
+	test("resolveFromManifest matches a unique hash prefix", () => {
+		expect(resolveFromManifest("aaaa", manifest)?.exportName).toBe("charge");
+	});
+
+	test("resolveFromManifest refuses an ambiguous prefix", () => {
+		const ambiguous = {
+			abcd1: { file: "a.ts", exportName: "a" },
+			abcd2: { file: "b.ts", exportName: "b" },
+		};
+		expect(resolveFromManifest("abcd", ambiguous)).toBeNull();
 	});
 });
