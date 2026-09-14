@@ -34,9 +34,14 @@ grouping repeated calls, diffing two responses, and replaying a call.
 
 One thing no browser tool can do: show the request your server function makes
 to your backend API. That happens on the server and never reaches the
-browser. SerovalScope can display it only if the server reports it on a
-response header — there's a drop-in middleware for that in
-[`examples/`](./examples/serovalscope-middleware.ts).
+browser. SerovalScope can display it — full request/response bodies and
+headers, not just timing — only if the server reports it on a response
+header; there's a drop-in middleware for that in
+[`examples/`](./examples/serovalscope-middleware.ts), which works against a
+deployed app, not just `pnpm dev`. Read that file's top comment before
+wiring it up: it's always on by design (so it works in production), which
+means the report header it sets is visible to anyone who can see a response
+from the app at all — not just this extension.
 
 ## Install
 
@@ -113,7 +118,13 @@ hot-reloads the panel on save.
   is *not visible to DevTools*. This section shows it only if the server
   reports it, via an `x-serovalscope-upstream` header (see
   [`examples/serovalscope-middleware.ts`](./examples/serovalscope-middleware.ts))
-  or a standard `Server-Timing` header.
+  or a standard `Server-Timing` header (metadata only — no bodies). The
+  method and full absolute URL are always shown up front; when the report
+  included them, click a call to expand its request/response headers
+  (secret-shaped ones arrive pre-redacted as `[redacted]`) and bodies
+  (pretty-printed when they're JSON). A `⚠ truncated` badge means the
+  server's report had to shorten or drop something to stay under the
+  header's size budget.
 - **Timing** — a per-phase breakdown (waiting/TTFB, download, …).
 - **Copy as** — the call as `myServerFn({ … })`, a `curl` of the raw RPC
   request, or a TypeScript type inferred from the decoded request/response.

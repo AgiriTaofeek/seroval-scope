@@ -5,11 +5,15 @@ import type { BackendCall, CapturedEntry } from "./types.ts";
 // surface it is for the server to *report* it — this module reads two such
 // channels off the response headers:
 //
-//  1. `x-serovalscope-upstream`: a JSON array this project's own server
-//     middleware sets (see examples/serovalscope-middleware.ts). Richest form.
+//  1. `x-serovalscope-upstream`: base64-encoded JSON this project's own server
+//     middleware sets (see examples/serovalscope-middleware.ts) — method,
+//     absolute URL, status, duration, and (always on, by design — see that
+//     file's header comment) the backend call's own request/response bodies
+//     and headers. Richest form. A legacy plain-JSON-array shape (from an
+//     older version of the middleware, metadata-only) is still accepted.
 //  2. `Server-Timing`: the standard header. Anything whose `desc` (or name)
 //     looks like an HTTP call is surfaced too, so a project already using
-//     Server-Timing gets something for free.
+//     Server-Timing gets something for free — metadata-only, never a body.
 
 interface RawUpstream {
 	method?: unknown;
@@ -18,6 +22,20 @@ interface RawUpstream {
 	durationMs?: unknown;
 	ms?: unknown;
 	label?: unknown;
+	requestBody?: unknown;
+	responseBody?: unknown;
+	requestHeaders?: unknown;
+	responseHeaders?: unknown;
+	truncated?: unknown;
+}
+
+function coerceHeaders(raw: unknown): Record<string, string> | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+		if (typeof v === "string") out[k] = v;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function coerceCall(raw: RawUpstream): BackendCall | null {
@@ -41,21 +59,75 @@ function coerceCall(raw: RawUpstream): BackendCall | null {
 		durationMs,
 		label: typeof raw.label === "string" ? raw.label : undefined,
 		source: "header",
+		requestBody: typeof raw.requestBody === "string" ? raw.requestBody : undefined,
+		responseBody: typeof raw.responseBody === "string" ? raw.responseBody : undefined,
+		requestHeaders: coerceHeaders(raw.requestHeaders),
+		responseHeaders: coerceHeaders(raw.responseHeaders),
+		truncated: raw.truncated === true,
 	};
 }
 
-export function parseUpstreamHeader(value: string | null): BackendCall[] {
-	if (!value) return [];
+function tryParseJson(text: string): unknown {
 	try {
-		const parsed: unknown = JSON.parse(value);
-		const list = Array.isArray(parsed) ? parsed : [parsed];
-		return list
-			.filter((x): x is RawUpstream => typeof x === "object" && x !== null)
-			.map(coerceCall)
-			.filter((c): c is BackendCall => c !== null);
+		return JSON.parse(text);
 	} catch {
-		return [];
+		return undefined;
 	}
+}
+
+// `atob` decodes a base64 string to a *binary* (Latin-1) string; the report
+// is UTF-8 JSON, so the bytes need re-decoding as UTF-8, not read char-by-char.
+function tryDecodeBase64Utf8(value: string): string | undefined {
+	try {
+		const binary = atob(value);
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		return new TextDecoder().decode(bytes);
+	} catch {
+		return undefined;
+	}
+}
+
+function coerceCallList(list: unknown[]): BackendCall[] {
+	return list
+		.filter((x): x is RawUpstream => typeof x === "object" && x !== null)
+		.map(coerceCall)
+		.filter((c): c is BackendCall => c !== null);
+}
+
+/**
+ * Decodes the `x-serovalscope-upstream` header. Current format is base64-
+ * encoded JSON `{ v: 1, calls: RawUpstream[], truncated?: boolean }`; a bare
+ * JSON array/object (the pre-body/header-capture format) is still accepted
+ * for a project that hasn't updated its middleware yet.
+ */
+export function parseUpstreamHeader(value: string | null): {
+	calls: BackendCall[];
+	truncated: boolean;
+} {
+	if (!value) return { calls: [], truncated: false };
+
+	const decoded = tryDecodeBase64Utf8(value);
+	if (decoded) {
+		const parsed = tryParseJson(decoded);
+		if (
+			parsed &&
+			typeof parsed === "object" &&
+			Array.isArray((parsed as { calls?: unknown }).calls)
+		) {
+			const obj = parsed as { calls: unknown[]; truncated?: unknown };
+			return { calls: coerceCallList(obj.calls), truncated: obj.truncated === true };
+		}
+	}
+
+	// Legacy: plain JSON array (or single object), metadata-only, not base64.
+	const legacy = tryParseJson(value);
+	if (legacy !== undefined) {
+		const list = Array.isArray(legacy) ? legacy : [legacy];
+		return { calls: coerceCallList(list), truncated: false };
+	}
+
+	return { calls: [], truncated: false };
 }
 
 // Server-Timing grammar (RFC / w3c): `name;dur=1.23;desc="text", name2;dur=4`.
@@ -114,20 +186,25 @@ function splitTopLevel(input: string, sep: string): string[] {
 
 /**
  * All backend calls reported for one captured entry, header source preferred
- * over Server-Timing, de-duplicated by method+url.
+ * over Server-Timing, de-duplicated by method+url. `truncated` is true when
+ * the header source had to drop calls or shorten bodies/headers to stay
+ * under its size budget (see examples/serovalscope-middleware.ts).
  */
 export function backendCallsFor(
 	entry: Pick<CapturedEntry, "upstreamHeader" | "serverTiming">,
-): BackendCall[] {
+): { calls: BackendCall[]; truncated: boolean } {
 	const fromHeader = parseUpstreamHeader(entry.upstreamHeader);
 	const fromTiming = parseServerTiming(entry.serverTiming);
-	return [
-		...fromHeader,
-		...fromTiming.filter(
-			(c) =>
-				!fromHeader.some(
-					(h) => c.url.includes(h.url) || h.url.includes(c.url),
-				),
-		),
-	];
+	return {
+		calls: [
+			...fromHeader.calls,
+			...fromTiming.filter(
+				(c) =>
+					!fromHeader.calls.some(
+						(h) => c.url.includes(h.url) || h.url.includes(c.url),
+					),
+			),
+		],
+		truncated: fromHeader.truncated,
+	};
 }

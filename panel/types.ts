@@ -56,6 +56,16 @@ export interface BackendCall {
 	/** Free-form label, used when a Server-Timing entry carries only a description. */
 	label?: string;
 	source: "header" | "server-timing";
+	/** The backend request's body, text/JSON only (binary bodies are never captured). */
+	requestBody?: string;
+	/** The backend response's body, text/JSON only (binary bodies are never captured). */
+	responseBody?: string;
+	/** The backend request's headers. Well-known secret-shaped ones arrive pre-redacted. */
+	requestHeaders?: Record<string, string>;
+	/** The backend response's headers. Well-known secret-shaped ones arrive pre-redacted. */
+	responseHeaders?: Record<string, string>;
+	/** True when this call's own body/headers were shortened to stay under the report's size budget. */
+	truncated?: boolean;
 }
 
 export interface CapturedEntry {

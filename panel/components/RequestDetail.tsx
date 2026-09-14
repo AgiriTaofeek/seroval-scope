@@ -7,7 +7,7 @@ import { entryByteSize, formatBytes } from "../format.ts";
 import { decodeServerFnUrl, type FunctionIdManifest } from "../functionName.ts";
 import { classifyResponse } from "../responseOutcome.ts";
 import { formatDuration, timingBreakdown } from "../timing.ts";
-import type { CapturedEntry, DecodeResult } from "../types.ts";
+import type { BackendCall, CapturedEntry, DecodeResult } from "../types.ts";
 import { CopyAsMenu } from "./CopyAsMenu.tsx";
 import { DiffSection } from "./DiffSection.tsx";
 import { ErrorBoundaryFallback } from "./ErrorBoundaryFallback.tsx";
@@ -130,6 +130,125 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 	);
 }
 
+function HeaderList({ title, headers }: { title: string; headers: Record<string, string> }) {
+	const theme = useTheme();
+	return (
+		<div style={{ marginBottom: 6 }}>
+			<div style={{ fontSize: 10, color: theme.muted, marginBottom: 2 }}>{title}</div>
+			{Object.entries(headers).map(([k, v]) => (
+				<div key={k} style={{ display: "flex", gap: 6, fontSize: 10, fontFamily: "monospace" }}>
+					<span style={{ color: theme.muted, whiteSpace: "nowrap" }}>{k}:</span>
+					<span style={{ wordBreak: "break-all" }}>{v}</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function BodyBlock({ title, text }: { title: string; text: string }) {
+	const theme = useTheme();
+	const pretty = useMemo(() => {
+		try {
+			return JSON.stringify(JSON.parse(text), null, 2);
+		} catch {
+			return text;
+		}
+	}, [text]);
+	return (
+		<div style={{ marginBottom: 6 }}>
+			<div style={{ fontSize: 10, color: theme.muted, marginBottom: 2 }}>{title}</div>
+			<pre
+				style={{
+					whiteSpace: "pre-wrap",
+					wordBreak: "break-all",
+					fontSize: 11,
+					background: theme.rawBg,
+					color: theme.fg,
+					padding: 6,
+					margin: 0,
+				}}
+			>
+				{pretty}
+			</pre>
+		</div>
+	);
+}
+
+// One backend/upstream call a server function made — see backendCallsFor().
+// The method + full absolute URL are the headline (that's the whole point:
+// the exact backend endpoint should be obvious at a glance, not buried in a
+// cramped table cell); status/duration are secondary, and body/headers (when
+// present) are tucked behind a click since most calls don't need inspecting.
+function BackendCallRow({ call }: { call: BackendCall }) {
+	const theme = useTheme();
+	const [expanded, setExpanded] = useState(false);
+	const hasDetail = Boolean(
+		call.requestBody || call.responseBody || call.requestHeaders || call.responseHeaders,
+	);
+	return (
+		<div style={{ borderBottom: `1px solid ${theme.borderSubtle}`, padding: "6px 0" }}>
+			<div
+				style={{
+					display: "flex",
+					alignItems: "baseline",
+					gap: 8,
+					flexWrap: "wrap",
+					cursor: hasDetail ? "pointer" : "default",
+				}}
+				onClick={() => hasDetail && setExpanded((e) => !e)}
+			>
+				{hasDetail && (
+					<span style={{ fontSize: 10, color: theme.muted }}>{expanded ? "▾" : "▸"}</span>
+				)}
+				<span
+					style={{
+						fontSize: 11,
+						fontWeight: 600,
+						color: theme.muted,
+						minWidth: 42,
+					}}
+				>
+					{call.method ?? ""}
+				</span>
+				<span
+					style={{
+						fontFamily: "monospace",
+						fontSize: 12,
+						wordBreak: "break-all",
+						flex: "1 1 260px",
+					}}
+				>
+					{call.url}
+				</span>
+				<span style={{ fontSize: 11, color: theme.muted }}>{call.status ?? ""}</span>
+				<span style={{ fontSize: 11, color: theme.muted }}>
+					{call.durationMs != null ? formatDuration(call.durationMs) : ""}
+				</span>
+				{call.truncated && (
+					<span
+						title="This call's body/headers were shortened to stay under the report's size budget"
+						style={{ fontSize: 10, color: theme.accent }}
+					>
+						⚠ truncated
+					</span>
+				)}
+			</div>
+			{expanded && (
+				<div style={{ marginTop: 6, paddingLeft: 16 }}>
+					{call.requestHeaders && (
+						<HeaderList title="Request headers" headers={call.requestHeaders} />
+					)}
+					{call.requestBody && <BodyBlock title="Request body" text={call.requestBody} />}
+					{call.responseHeaders && (
+						<HeaderList title="Response headers" headers={call.responseHeaders} />
+					)}
+					{call.responseBody && <BodyBlock title="Response body" text={call.responseBody} />}
+				</div>
+			)}
+		</div>
+	);
+}
+
 export function RequestDetail({
 	entry,
 	entries,
@@ -152,7 +271,10 @@ export function RequestDetail({
 		() => decodeServerFnUrl(entry.url, manifest),
 		[entry, manifest],
 	);
-	const backendCalls = useMemo(() => backendCallsFor(entry), [entry]);
+	const { calls: backendCalls, truncated: backendTruncated } = useMemo(
+		() => backendCallsFor(entry),
+		[entry],
+	);
 	const formData = useMemo(
 		() =>
 			entry.isFormData
@@ -308,30 +430,33 @@ export function RequestDetail({
 			)}
 
 			<div style={{ marginTop: 12 }}>
-				<strong style={{ fontSize: 12 }}>Backend calls</strong>
+				<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+					<strong style={{ fontSize: 12 }}>Backend calls</strong>
+					{backendTruncated && (
+						<span
+							title="Some calls, or their bodies/headers, were dropped to stay under the report's size budget"
+							style={{ fontSize: 10, color: theme.accent }}
+						>
+							⚠ truncated
+						</span>
+					)}
+				</div>
 				{backendCalls.length === 0 ? (
 					<div style={{ fontSize: 11, color: theme.muted, marginTop: 2 }}>
 						None reported. The server-to-backend request isn't visible to
 						DevTools — add the middleware from{" "}
 						<code>examples/serovalscope-middleware.ts</code> to have the server
-						report it via <code>x-serovalscope-upstream</code> or use{" "}
-						<code>Server-Timing</code>.
+						report it (method, absolute URL, status, duration, and the backend
+						call's own request/response bodies and headers) via{" "}
+						<code>x-serovalscope-upstream</code>, or use <code>Server-Timing</code>{" "}
+						for metadata only.
 					</div>
 				) : (
-					<table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginTop: 4 }}>
-						<tbody>
-							{backendCalls.map((call, i) => (
-								<tr key={`${call.url}-${i}`} style={{ borderBottom: `1px solid ${theme.borderSubtle}` }}>
-									<td style={{ padding: 3, color: theme.muted }}>{call.method ?? ""}</td>
-									<td style={{ padding: 3, fontFamily: "monospace", wordBreak: "break-all" }}>{call.url}</td>
-									<td style={{ padding: 3, textAlign: "right" }}>{call.status ?? ""}</td>
-									<td style={{ padding: 3, textAlign: "right", color: theme.muted }}>
-										{call.durationMs != null ? formatDuration(call.durationMs) : ""}
-									</td>
-								</tr>
-							))}
-						</tbody>
-					</table>
+					<div style={{ marginTop: 4 }}>
+						{backendCalls.map((call, i) => (
+							<BackendCallRow key={`${call.url}-${i}`} call={call} />
+						))}
+					</div>
 				)}
 			</div>
 
