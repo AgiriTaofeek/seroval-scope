@@ -1,0 +1,7 @@
+# Moved from package.json#pnpm.onlyBuiltDependencies — pnpm 11 no longer
+# reads the `pnpm` field in package.json (see https://pnpm.io/settings).
+# `onlyBuiltDependencies`/`ignoredBuiltDependencies` were merged into this
+# single allow-list map.
+allowBuilds:
+  esbuild: true
+  spawn-sync: true
